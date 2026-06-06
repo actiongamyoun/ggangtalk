@@ -333,12 +333,11 @@ body {
   width: 64px;
   height: 64px;
   border-radius: 50%;
-  display: grid;
-  place-items: center;
-  font-family: 'Do Hyeon', sans-serif;
-  font-size: 28px;
-  font-weight: 700;
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.5);
+}
+.avatar svg {
+  display: block;
+  border-radius: 50%;
+  filter: drop-shadow(0 4px 9px rgba(31, 52, 74, 0.2));
 }
 .ring {
   position: absolute;
@@ -374,6 +373,49 @@ body {
 .status.live { color: var(--green-dark); }
 .status.muted { color: var(--coral); }
 .status.connecting { color: var(--muted); }
+.status.failed { color: #e07b1a; font-weight: 700; }
+
+/* 이퀄라이저 게이지 */
+.eq {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 16px;
+}
+.eq-bar {
+  width: 4px;
+  height: 16px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, var(--green), var(--green-dark));
+  transform: scaleY(0.12);
+  transform-origin: bottom center;
+  will-change: transform;
+}
+
+/* 캐릭터 선택 그리드 */
+.char-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.char-cell {
+  display: grid;
+  place-items: center;
+  padding: 6px 0;
+  border-radius: 14px;
+  border: 2px solid transparent;
+  background: #f5f8fb;
+  cursor: pointer;
+  transition: transform 0.12s, border-color 0.15s, background 0.15s;
+}
+.char-cell:active { transform: scale(0.92); }
+.char-cell.sel {
+  border-color: var(--green);
+  background: rgba(37, 194, 106, 0.12);
+  box-shadow: 0 6px 16px -8px rgba(37, 194, 106, 0.5);
+}
+.char-cell svg { display: block; }
+.char-cell:disabled { opacity: 0.6; cursor: default; }
 
 .empty-hint {
   text-align: center;

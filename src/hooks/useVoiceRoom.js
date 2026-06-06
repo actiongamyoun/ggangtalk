@@ -1,11 +1,27 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase, hasSupabaseConfig } from '../lib/supabase'
 
-// 구글 무료 STUN 서버 (집 와이파이 대부분 OK).
-// 일부 모바일망에서 직접연결이 안 붙으면 여기에 TURN 서버를 추가하면 됨.
+// 구글 무료 STUN + Open Relay 무료 TURN (계정 불필요, best-effort).
+// 직접연결(P2P)이 안 되는 모바일망에서는 TURN이 음성을 중계해 줌.
+// 만약 그래도 안 붙으면 Cloudflare/Metered 무료 TURN으로 교체하면 됨.
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' }
+  { urls: 'stun:stun1.l.google.com:19302' },
+  {
+    urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject'
+  }
 ]
 
 const SPEAKING_THRESHOLD = 8 // 0~255 기준, 말하는 중 판정 임계값
@@ -23,10 +39,12 @@ export function useVoiceRoom() {
   const [muted, setMuted] = useState(false)
   const [members, setMembers] = useState({}) // id -> { id, nickname, muted, isMe }
   const [connStates, setConnStates] = useState({}) // id -> RTCPeerConnectionState
+  const [failedIds, setFailedIds] = useState(() => new Set()) // 연결 실패한 피어
   const [speakingIds, setSpeakingIds] = useState(() => new Set())
 
   const myIdRef = useRef(null)
   const nicknameRef = useRef('')
+  const charRef = useRef(0)
   const mutedRef = useRef(false)
   const channelRef = useRef(null)
   const localStreamRef = useRef(null)
@@ -34,7 +52,10 @@ export function useVoiceRoom() {
   const pendingIceRef = useRef({}) // id -> [candidate]
   const audioElsRef = useRef({}) // id -> <audio>
   const metersRef = useRef({}) // id -> { source, analyser, interval }
+  const levelsRef = useRef({}) // id -> 0..1 실시간 음량 (렌더 밖에서 직접 읽음)
+  const watchdogsRef = useRef({}) // id -> { restart, fail } 타이머
   const audioCtxRef = useRef(null)
+  const unloadHandlerRef = useRef(null)
   const okToReconcileRef = useRef(false) // 닉네임 확인 끝나고 입장 확정되면 true
 
   // ---- 말하는 사람 감지 (볼륨 미터) ----
@@ -70,8 +91,11 @@ export function useVoiceRoom() {
           }
           const rms = Math.sqrt(sum / data.length)
           const isMeMuted = id === myIdRef.current && mutedRef.current
+          // 0~1 정규화 레벨 (이퀄라이저 게이지용). rms 약 0~50 → 0~1
+          const level = isMeMuted ? 0 : Math.min(1, rms / 32)
+          levelsRef.current[id] = level
           updateSpeaking(id, rms > SPEAKING_THRESHOLD && !isMeMuted)
-        }, 120)
+        }, 90)
         metersRef.current[id] = { source, analyser, interval }
       } catch (e) {
         console.warn('볼륨 미터 실패', e)
@@ -87,6 +111,7 @@ export function useVoiceRoom() {
       try { m.source.disconnect() } catch {}
       delete metersRef.current[id]
     }
+    delete levelsRef.current[id]
   }, [])
 
   // ---- 시그널링 전송 ----
@@ -113,6 +138,26 @@ export function useVoiceRoom() {
     [attachMeter]
   )
 
+  // ---- 워치독(연결 감시) ----
+  const clearWatchdog = useCallback((id) => {
+    const w = watchdogsRef.current[id]
+    if (w) {
+      clearTimeout(w.restart)
+      clearTimeout(w.fail)
+      delete watchdogsRef.current[id]
+    }
+  }, [])
+
+  const setFailed = useCallback((id, val) => {
+    setFailedIds((prev) => {
+      if (prev.has(id) === val) return prev
+      const next = new Set(prev)
+      if (val) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }, [])
+
   // ---- 피어 연결 정리 ----
   const cleanupPeer = useCallback(
     (id) => {
@@ -128,6 +173,8 @@ export function useVoiceRoom() {
         delete audioElsRef.current[id]
       }
       detachMeter(id)
+      clearWatchdog(id)
+      setFailed(id, false)
       delete pendingIceRef.current[id]
       setConnStates((p) => {
         const n = { ...p }
@@ -136,7 +183,7 @@ export function useVoiceRoom() {
       })
       updateSpeaking(id, false)
     },
-    [detachMeter, updateSpeaking]
+    [detachMeter, updateSpeaking, clearWatchdog, setFailed]
   )
 
   // ---- 피어 연결 생성 ----
@@ -144,6 +191,7 @@ export function useVoiceRoom() {
     (peerId, initiator) => {
       if (pcsRef.current[peerId]) return pcsRef.current[peerId]
       const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
+      pc._initiator = initiator
       pcsRef.current[peerId] = pc
 
       localStreamRef.current?.getTracks().forEach((t) => pc.addTrack(t, localStreamRef.current))
@@ -154,8 +202,34 @@ export function useVoiceRoom() {
         }
       }
       pc.ontrack = (e) => attachRemoteAudio(peerId, e.streams[0])
+
+      const doIceRestart = () => {
+        if (!pc._initiator || pc.connectionState === 'connected') return
+        pc.createOffer({ iceRestart: true })
+          .then((o) => pc.setLocalDescription(o))
+          .then(() =>
+            sendSignal({ kind: 'offer', to: peerId, from: myIdRef.current, sdp: pc.localDescription })
+          )
+          .catch(() => {})
+      }
+
       pc.onconnectionstatechange = () => {
-        setConnStates((p) => ({ ...p, [peerId]: pc.connectionState }))
+        const s = pc.connectionState
+        setConnStates((p) => ({ ...p, [peerId]: s }))
+        if (s === 'connected') {
+          clearWatchdog(peerId)
+          setFailed(peerId, false)
+        } else if (s === 'failed') {
+          doIceRestart()
+        }
+      }
+
+      // 워치독: 12초 안에 연결 안 되면 ICE 재시작, 25초까지 안 되면 '연결 실패' 표시
+      watchdogsRef.current[peerId] = {
+        restart: setTimeout(doIceRestart, 12000),
+        fail: setTimeout(() => {
+          if (pcsRef.current[peerId]?.connectionState !== 'connected') setFailed(peerId, true)
+        }, 25000)
       }
 
       if (initiator) {
@@ -168,7 +242,7 @@ export function useVoiceRoom() {
       }
       return pc
     },
-    [attachRemoteAudio, sendSignal]
+    [attachRemoteAudio, sendSignal, clearWatchdog, setFailed]
   )
 
   const flushIce = useCallback(async (id, pc) => {
@@ -194,7 +268,7 @@ export function useVoiceRoom() {
           sendSignal({ kind: 'answer', to: from, from: myIdRef.current, sdp: pc.localDescription })
         } else if (p.kind === 'answer') {
           const pc = pcsRef.current[from]
-          if (pc && !pc.currentRemoteDescription) {
+          if (pc && pc.signalingState === 'have-local-offer') {
             await pc.setRemoteDescription(p.sdp)
             await flushIce(from, pc)
           }
@@ -223,7 +297,13 @@ export function useVoiceRoom() {
       const m = {}
       ids.forEach((id) => {
         const meta = state[id]?.[0] || {}
-        m[id] = { id, nickname: meta.nickname || '친구', muted: !!meta.muted, isMe: id === myId }
+        m[id] = {
+          id,
+          nickname: meta.nickname || '친구',
+          muted: !!meta.muted,
+          char: Number.isInteger(meta.char) ? meta.char : 0,
+          isMe: id === myId
+        }
       })
       setMembers(m)
 
@@ -245,7 +325,7 @@ export function useVoiceRoom() {
 
   // ---- 입장 ----
   const join = useCallback(
-    async ({ nickname, code }) => {
+    async ({ nickname, code, char = 0 }) => {
       if (!hasSupabaseConfig || !supabase) {
         setError('서버 설정이 안 돼 있어요. .env에 Supabase 정보를 넣어주세요.')
         setStatus('error')
@@ -257,6 +337,7 @@ export function useVoiceRoom() {
         const myId = randId()
         myIdRef.current = myId
         nicknameRef.current = nickname
+        charRef.current = char
         mutedRef.current = false
         okToReconcileRef.current = false
         setMuted(false)
@@ -276,6 +357,14 @@ export function useVoiceRoom() {
           config: { presence: { key: myId }, broadcast: { self: false } }
         })
         channelRef.current = channel
+
+        // 탭을 닫거나 앱을 나가면 즉시 presence에서 빠지게 (= 다른 사람 화면에서 바로 사라짐)
+        const onHide = () => {
+          try { channel.untrack() } catch {}
+        }
+        window.addEventListener('pagehide', onHide)
+        window.addEventListener('beforeunload', onHide)
+        unloadHandlerRef.current = onHide
 
         channel.on('broadcast', { event: 'signal' }, ({ payload }) => handleSignal(payload))
         channel.on('presence', { event: 'sync' }, () => {
@@ -303,7 +392,7 @@ export function useVoiceRoom() {
               return
             }
 
-            await channel.track({ nickname, muted: false })
+            await channel.track({ nickname, muted: false, char })
             okToReconcileRef.current = true
             reconcile(channel.presenceState())
             setStatus('joined')
@@ -332,12 +421,17 @@ export function useVoiceRoom() {
     mutedRef.current = next
     localStreamRef.current?.getAudioTracks().forEach((t) => (t.enabled = !next))
     setMuted(next)
-    channelRef.current?.track({ nickname: nicknameRef.current, muted: next })
+    channelRef.current?.track({ nickname: nicknameRef.current, muted: next, char: charRef.current })
     if (next) updateSpeaking(myIdRef.current, false)
   }, [updateSpeaking])
 
   // ---- 나가기 ----
   const leave = useCallback(() => {
+    if (unloadHandlerRef.current) {
+      window.removeEventListener('pagehide', unloadHandlerRef.current)
+      window.removeEventListener('beforeunload', unloadHandlerRef.current)
+      unloadHandlerRef.current = null
+    }
     const ch = channelRef.current
     if (ch) {
       try { ch.untrack() } catch {}
@@ -351,6 +445,7 @@ export function useVoiceRoom() {
     localStreamRef.current = null
     setMembers({})
     setConnStates({})
+    setFailedIds(new Set())
     setSpeakingIds(new Set())
     setMuted(false)
     mutedRef.current = false
@@ -376,7 +471,9 @@ export function useVoiceRoom() {
     muted,
     members,
     connStates,
+    failedIds,
     speakingIds,
+    levelsRef,
     configured: hasSupabaseConfig,
     join,
     leave,

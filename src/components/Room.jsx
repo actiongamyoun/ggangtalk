@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import Participant from './Participant'
 
 export default function Room({ room }) {
-  const { roomCode, members, speakingIds, connStates, muted, myId, toggleMute, leave } = room
+  const { roomCode, members, speakingIds, connStates, failedIds, levelsRef, muted, myId, toggleMute, leave } = room
   const [copied, setCopied] = useState(false)
 
   const list = Object.values(members).sort((a, b) => {
@@ -45,6 +45,8 @@ export default function Room({ room }) {
             member={m}
             speaking={speakingIds.has(m.id)}
             connState={connStates[m.id]}
+            failed={failedIds.has(m.id)}
+            levelsRef={levelsRef}
           />
         ))}
       </div>

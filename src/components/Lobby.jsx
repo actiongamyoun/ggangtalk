@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import Stickman, { CHARACTERS } from './Stickman'
 
 const randomCode = () => String(Math.floor(100000 + Math.random() * 900000))
 
@@ -6,6 +7,7 @@ export default function Lobby({ room }) {
   const { join, status, error, configured } = room
   const [nickname, setNickname] = useState('')
   const [code, setCode] = useState('')
+  const [char, setChar] = useState(0)
   const [localErr, setLocalErr] = useState(null)
   const connecting = status === 'connecting'
 
@@ -24,7 +26,7 @@ export default function Lobby({ room }) {
       return
     }
     setLocalErr(null)
-    join({ nickname: nickname.trim(), code: theCode })
+    join({ nickname: nickname.trim(), code: theCode, char })
   }
 
   const makeRoom = () => {
@@ -54,6 +56,25 @@ export default function Lobby({ room }) {
       )}
 
       <div className="card">
+        <div className="field">
+          <span className="field-label">내 캐릭터</span>
+          <div className="char-grid">
+            {CHARACTERS.map((c, i) => (
+              <button
+                key={i}
+                type="button"
+                className={`char-cell ${char === i ? 'sel' : ''}`}
+                onClick={() => setChar(i)}
+                disabled={connecting}
+                aria-label={c.name}
+                title={c.name}
+              >
+                <Stickman index={i} size={52} />
+              </button>
+            ))}
+          </div>
+        </div>
+
         <label className="field">
           <span className="field-label">내 이름</span>
           <input

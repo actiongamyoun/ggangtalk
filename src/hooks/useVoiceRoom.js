@@ -12,6 +12,10 @@ const SPEAKING_THRESHOLD = 8 // 0~255 기준, 말하는 중 판정 임계값
 
 const randId = () => Math.random().toString(36).slice(2, 10)
 
+// 닉네임 비교용 정규화 (대소문자/공백 무시)
+const normName = (s) => (s || '').trim().toLowerCase()
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
 export function useVoiceRoom() {
   const [status, setStatus] = useState('idle') // idle | connecting | joined | error
   const [error, setError] = useState(null)
@@ -31,6 +35,7 @@ export function useVoiceRoom() {
   const audioElsRef = useRef({}) // id -> <audio>
   const metersRef = useRef({}) // id -> { source, analyser, interval }
   const audioCtxRef = useRef(null)
+  const okToReconcileRef = useRef(false) // 닉네임 확인 끝나고 입장 확정되면 true
 
   // ---- 말하는 사람 감지 (볼륨 미터) ----
   const updateSpeaking = useCallback((id, speaking) => {
@@ -253,6 +258,7 @@ export function useVoiceRoom() {
         myIdRef.current = myId
         nicknameRef.current = nickname
         mutedRef.current = false
+        okToReconcileRef.current = false
         setMuted(false)
         setRoomCode(code)
 
@@ -272,11 +278,34 @@ export function useVoiceRoom() {
         channelRef.current = channel
 
         channel.on('broadcast', { event: 'signal' }, ({ payload }) => handleSignal(payload))
-        channel.on('presence', { event: 'sync' }, () => reconcile(channel.presenceState()))
+        channel.on('presence', { event: 'sync' }, () => {
+          if (okToReconcileRef.current) reconcile(channel.presenceState())
+        })
 
         channel.subscribe(async (st) => {
           if (st === 'SUBSCRIBED') {
+            // presence 스냅샷이 도착할 시간을 잠깐 준 뒤 닉네임 중복 검사
+            await sleep(500)
+            const state = channel.presenceState()
+            const taken = Object.entries(state)
+              .filter(([id]) => id !== myId)
+              .some(([, arr]) => normName(arr?.[0]?.nickname) === normName(nickname))
+
+            if (taken) {
+              // 입장 취소 — 같은 이름이 이미 방에 있음
+              try { supabase.removeChannel(channel) } catch {}
+              channelRef.current = null
+              detachMeter(myId)
+              localStreamRef.current?.getTracks().forEach((t) => t.stop())
+              localStreamRef.current = null
+              setError(`"${nickname}" 이름은 이미 방에 있어요. 다른 이름으로 들어와 주세요.`)
+              setStatus('error')
+              return
+            }
+
             await channel.track({ nickname, muted: false })
+            okToReconcileRef.current = true
+            reconcile(channel.presenceState())
             setStatus('joined')
           } else if (st === 'CHANNEL_ERROR' || st === 'TIMED_OUT') {
             setError('연결에 실패했어요. 잠시 후 다시 시도해 주세요.')
@@ -294,7 +323,7 @@ export function useVoiceRoom() {
         setStatus('error')
       }
     },
-    [attachMeter, handleSignal, reconcile]
+    [attachMeter, detachMeter, handleSignal, reconcile]
   )
 
   // ---- 음소거 토글 ----
@@ -315,6 +344,7 @@ export function useVoiceRoom() {
       try { supabase?.removeChannel(ch) } catch {}
     }
     channelRef.current = null
+    okToReconcileRef.current = false
     Object.keys(pcsRef.current).forEach((id) => cleanupPeer(id))
     detachMeter(myIdRef.current)
     localStreamRef.current?.getTracks().forEach((t) => t.stop())

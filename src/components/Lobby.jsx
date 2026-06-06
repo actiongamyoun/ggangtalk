@@ -43,7 +43,7 @@ export default function Lobby({ room }) {
         <div className="logo-mark" aria-hidden="true">
           <span className="logo-dot" />
         </div>
-        <h1 className="title">깡통톡</h1>
+        <h1 className="title">깡톡</h1>
         <p className="subtitle">게임할 때 친구들이랑 단체로 통화해요</p>
       </header>
 

@@ -1,50 +1,66 @@
-import React, { useState } from 'react'
+import React, { useRef, useState } from 'react'
 import Stickman, { CHARACTERS } from './Stickman'
 
-const randomCode = () => String(Math.floor(100000 + Math.random() * 900000))
+// 코드는 무조건 자동 8자리 (사용자가 직접 못 정함 → 123456 충돌 방지)
+const make8 = () => String(Math.floor(10000000 + Math.random() * 90000000))
 
 export default function Lobby({ room }) {
   const { join, status, error, configured } = room
   const [nickname, setNickname] = useState('')
-  const [code, setCode] = useState('')
+  const [joinCode, setJoinCode] = useState('')
   const [char, setChar] = useState(0)
   const [localErr, setLocalErr] = useState(null)
+  const [rolling, setRolling] = useState(false)
+  const [rolledCode, setRolledCode] = useState('')
+  const [settled, setSettled] = useState(false)
+  const ivRef = useRef(null)
+
   const connecting = status === 'connecting'
+  const busy = connecting || rolling
+  const onlyDigits = (v) => v.replace(/\D/g, '').slice(0, 8)
 
-  const onlyDigits = (v) => v.replace(/\D/g, '').slice(0, 6)
-
-  const validate = (theCode) => {
-    if (!nickname.trim()) return '닉네임을 입력해 주세요.'
-    if (!/^\d{6}$/.test(theCode)) return '방 코드는 6자리 숫자예요.'
-    return null
-  }
-
-  const enter = (theCode) => {
-    const err = validate(theCode)
-    if (err) {
-      setLocalErr(err)
-      return
-    }
-    setLocalErr(null)
-    join({ nickname: nickname.trim(), code: theCode, char })
-  }
-
+  // 주사위 굴리기 → 8자리 자동 생성 → 입장
   const makeRoom = () => {
     if (!nickname.trim()) {
       setLocalErr('먼저 닉네임을 입력해 주세요.')
       return
     }
-    const c = randomCode()
-    setCode(c)
-    enter(c)
+    setLocalErr(null)
+    setSettled(false)
+    setRolling(true)
+    const start = Date.now()
+    ivRef.current = setInterval(() => {
+      setRolledCode(make8())
+      if (Date.now() - start > 900) {
+        clearInterval(ivRef.current)
+        const finalCode = make8()
+        setRolledCode(finalCode)
+        setRolling(false)
+        setSettled(true)
+        // 굴려서 나온 코드 잠깐 보여주고 입장
+        setTimeout(() => join({ nickname: nickname.trim(), code: finalCode, char }), 450)
+      }
+    }, 60)
+  }
+
+  // 친구가 준 코드로 입장
+  const enterByCode = () => {
+    if (!nickname.trim()) {
+      setLocalErr('닉네임을 입력해 주세요.')
+      return
+    }
+    if (!/^\d{8}$/.test(joinCode)) {
+      setLocalErr('방 코드는 8자리 숫자예요.')
+      return
+    }
+    setLocalErr(null)
+    join({ nickname: nickname.trim(), code: joinCode, char })
   }
 
   return (
     <div className="lobby">
       <header className="lobby-head">
-        <div className="logo-mark" aria-hidden="true">
-          <span className="logo-dot" />
-        </div>
+        <div className="logo-mark" aria-hidden="true" />
         <h1 className="title">깡톡</h1>
         <p className="subtitle">게임할 때 친구들이랑 단체로 통화해요</p>
       </header>
@@ -65,7 +81,7 @@ export default function Lobby({ room }) {
                 type="button"
                 className={`char-cell ${char === i ? 'sel' : ''}`}
                 onClick={() => setChar(i)}
-                disabled={connecting}
+                disabled={busy}
                 aria-label={c.name}
                 title={c.name}
               >
@@ -80,54 +96,50 @@ export default function Lobby({ room }) {
           <input
             className="input"
             type="text"
-            inputMode="text"
             maxLength={12}
             placeholder="닉네임 (예: 깡이)"
             value={nickname}
             onChange={(e) => setNickname(e.target.value)}
-            disabled={connecting}
+            disabled={busy}
           />
         </label>
 
-        <label className="field">
-          <span className="field-label">방 코드</span>
-          <div className="code-row">
-            <input
-              className="input code-input"
-              type="text"
-              inputMode="numeric"
-              pattern="\d*"
-              placeholder="6자리 숫자"
-              value={code}
-              onChange={(e) => setCode(onlyDigits(e.target.value))}
-              disabled={connecting}
-            />
-            <button
-              type="button"
-              className="dice-btn"
-              onClick={() => setCode(randomCode())}
-              disabled={connecting}
-              title="랜덤 코드"
-            >
-              🎲
-            </button>
+        {(rolling || settled) && (
+          <div className={`roll-box ${settled ? 'settled' : ''}`}>
+            <span className={`dice ${rolling ? 'spin' : ''}`}>🎲</span>
+            <span className="roll-code">{rolledCode}</span>
           </div>
-        </label>
+        )}
 
         {(localErr || error) && <div className="banner error">{localErr || error}</div>}
 
-        <button className="btn-primary" onClick={() => enter(code)} disabled={connecting}>
-          {connecting ? '연결 중…' : '입장하기'}
+        <button className="btn-primary" onClick={makeRoom} disabled={busy}>
+          {rolling ? '코드 굴리는 중…' : connecting ? '입장 중…' : '🎲 새 방 만들기'}
         </button>
-        <button className="btn-ghost" onClick={makeRoom} disabled={connecting}>
-          + 새 방 만들기
-        </button>
+
+        <div className="divider"><span>또는 친구가 준 코드로</span></div>
+
+        <div className="code-row">
+          <input
+            className="input code-input"
+            type="text"
+            inputMode="numeric"
+            pattern="\d*"
+            placeholder="8자리 코드"
+            value={joinCode}
+            onChange={(e) => setJoinCode(onlyDigits(e.target.value))}
+            disabled={busy}
+          />
+          <button className="btn-join" onClick={enterByCode} disabled={busy}>
+            입장
+          </button>
+        </div>
       </div>
 
       <p className="hint">
-        같은 방에 들어오려면 친구들에게 <b>방 코드</b>를 불러주세요.
+        방을 만들면 <b>8자리 코드</b>가 자동으로 만들어져요.
         <br />
-        입장하면 바로 마이크가 켜져요 🎤
+        친구들에게 그 코드를 불러주면 같이 입장돼요 🎤
       </p>
     </div>
   )

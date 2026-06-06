@@ -471,3 +471,71 @@ body {
   from { opacity: 0; transform: scale(0.92); }
   to { opacity: 1; transform: scale(1); }
 }
+
+/* ---------------- 코드 생성(주사위) / 입장 ---------------- */
+.roll-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 14px;
+  margin: 2px 0 14px;
+  border-radius: 16px;
+  background: rgba(37, 194, 106, 0.08);
+  border: 1.5px solid rgba(37, 194, 106, 0.25);
+}
+.roll-box.settled {
+  border-color: var(--green);
+  animation: pop 0.35s ease both;
+}
+.dice {
+  font-size: 30px;
+  display: inline-block;
+  line-height: 1;
+}
+.dice.spin { animation: diceRoll 0.45s linear infinite; }
+.roll-code {
+  font-family: 'Do Hyeon', sans-serif;
+  font-size: 30px;
+  letter-spacing: 5px;
+  color: var(--green-dark);
+}
+
+.divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.divider::before,
+.divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--panel-border);
+}
+
+.btn-join {
+  height: 54px;
+  flex: none;
+  padding: 0 22px;
+  border: none;
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--sky), #1c7fe0);
+  color: #fff;
+  font-family: 'Do Hyeon', sans-serif;
+  font-size: 17px;
+  cursor: pointer;
+  box-shadow: 0 12px 24px -10px rgba(46, 155, 255, 0.55);
+  transition: transform 0.12s;
+}
+.btn-join:active { transform: translateY(2px); }
+.btn-join:disabled { opacity: 0.55; cursor: default; }
+
+@keyframes diceRoll {
+  0% { transform: rotate(0deg) scale(1); }
+  50% { transform: rotate(180deg) scale(1.25); }
+  100% { transform: rotate(360deg) scale(1); }
+}
